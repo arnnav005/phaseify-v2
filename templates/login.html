@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login to Phaseify</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        .spotify-green {
+            background-color: #1DB954;
+        }
+        .spotify-green:hover {
+            background-color: #1ED760;
+        }
+    </style>
+</head>
+<body class="bg-zinc-900 text-white flex items-center justify-center h-screen">
+    <div class="text-center p-8 max-w-lg mx-auto">
+        <svg xmlns="http://www.w3.org/2000/svg" class="w-24 h-24 mx-auto mb-6 text-white" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.477 2 2 6.477 2 12s4.477 10 10 10 10-4.477 10-10S17.523 2 12 2zm4.243 14.757c-.246.36-1.127.495-1.486.248-2.853-1.74-6.44-2.13-10.603-1.157-.43.102-.578-.34-.148-.442 4.49-1.056 8.42-0.63 11.517 1.258.36.248.197 1.128-.283 1.1zM17.43 14.2c-.31.432-1.253.585-1.684.273-3.235-1.98-7.923-2.58-11.536-1.425-.516.162-.71-.486-.194-.648 4.03-1.26 9.15-0.608 12.724 1.62.43.273.248 1.253-.31 1.48zm.18-2.69c-.363.516-1.56.702-2.076.34-3.75-2.28-9.48-3.05-13.43-1.666-.608.216-.852-.575-.244-.792 4.41-1.56 10.62-0.737 14.73 1.815.517.364.302 1.56-.98 1.303z"/></svg>
+        <h1 class="text-5xl font-black mb-2 tracking-tight">Phaseify</h1>
+        <p class="text-zinc-400 text-lg mb-8">Discover the unique phases of your music history.</p>
+        <a href="/login" class="spotify-green text-zinc-900 font-bold py-4 px-10 rounded-full text-lg uppercase tracking-wider transition-transform transform hover:scale-105 inline-block">
+            Login with Spotify
+        </a>
+    </div>
+</body>
+</html>
