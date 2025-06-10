@@ -25,7 +25,11 @@
 
     <header class="text-center py-12 px-4">
         <h1 class="text-5xl font-black tracking-tight">Your Music Discovery Timeline</h1>
-        <p id="subtitle" class="text-zinc-400 text-lg mt-4">Hello, {{ display_name }}! Analyzing your listening history now...</p>
+        <!-- MODIFICATION: Added a container for the loading indicator -->
+        <div class="mt-4 flex justify-center items-center gap-3">
+             <div id="loading-spinner" class="animate-spin rounded-full h-5 w-5 border-b-2 border-zinc-400"></div>
+             <p id="subtitle" class="text-zinc-400 text-lg">Hello, {{ display_name }}! Analyzing your listening history now...</p>
+        </div>
     </header>
 
     <main class="container mx-auto px-4 py-8 max-w-3xl">
@@ -41,6 +45,7 @@
     <script>
         const container = document.getElementById('timeline-container');
         const subtitle = document.getElementById('subtitle');
+        const spinner = document.getElementById('loading-spinner'); // Get the spinner element
 
         function createSkeletonCard(phase) {
             return `
@@ -64,14 +69,16 @@
 
         async function loadTimeline() {
             try {
+                subtitle.innerText = 'Step 1 of 2: Fetching your listening history...';
                 const initialResponse = await fetch('/api/get_initial_phases');
                 if (!initialResponse.ok) throw new Error('Could not fetch your Spotify data. Your session may have expired.');
                 const initialPhases = await initialResponse.json();
 
-                subtitle.innerText = `Hello, {{ display_name }}! Here is your journey through the music you've discovered.`;
+                subtitle.innerText = `Step 2 of 2: Generating AI summaries for your ${initialPhases.length} phases...`;
 
                 if (initialPhases.length === 0) {
                     container.innerHTML = `<p class="text-center">Couldn't find any saved songs to analyze.</p>`;
+                    subtitle.innerText = `Hello, {{ display_name }}! We couldn't find any saved songs to build your timeline.`;
                     return;
                 }
 
@@ -105,9 +112,16 @@
                     updateCardWithData(phase, fullPhaseData);
                 }
 
+                subtitle.innerText = `Hello, {{ display_name }}! Here is your journey through the music you've discovered.`;
+
             } catch (error) {
                 subtitle.innerText = 'Something went wrong.';
                 container.innerHTML = `<p class="text-red-400 text-center">An error occurred during analysis. Please try logging out and back in. Details: ${error.message}</p>`;
+            } finally {
+                // MODIFICATION: Hide the spinner when everything is done
+                if (spinner) {
+                    spinner.style.display = 'none';
+                }
             }
         }
 

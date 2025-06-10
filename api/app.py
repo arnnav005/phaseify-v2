@@ -11,7 +11,8 @@ import json
 # --- Setup ---
 logging.basicConfig(level=logging.INFO)
 load_dotenv()
-app = Flask(__name__, template_folder='../templates') # Modified for Vercel structure
+# Vercel requires the templates folder to be relative to the app's location in the /api directory
+app = Flask(__name__, template_folder='../templates') 
 app.secret_key = os.getenv("FLASK_SECRET_KEY", os.urandom(24))
 
 # --- Spotify Credentials and API Configuration ---
@@ -45,18 +46,17 @@ def _get_all_pages(url, access_token):
 
 def _get_artist_genres(artist_ids, access_token):
     genres_map = {}
+    if not artist_ids: return genres_map
     for i in range(0, len(artist_ids), 50):
         chunk = artist_ids[i:i+50]
         params = {'ids': ','.join(chunk)}
         data = _get_api_data('artists', access_token, params=params)
         for artist in data.get('artists', []):
-            if artist:
-                genres_map[artist['id']] = artist.get('genres', [])
+            if artist: genres_map[artist['id']] = artist.get('genres', [])
     return genres_map
 
 def _get_season_key(dt):
-    month = dt.month
-    year = dt.year
+    month, year = dt.month, dt.year
     if month in (1, 2): return f"Winter {year - 1}"
     if month in (3, 4, 5): return f"Spring {year}"
     if month in (6, 7, 8): return f"Summer {year}"
@@ -65,20 +65,17 @@ def _get_season_key(dt):
 
 def _get_ai_phase_details(phase_characteristics, top_artists):
     gemini_api_key = os.getenv("GEMINI_API_KEY")
-    fallback_response = {"phase_name": f"Your {phase_characteristics['period']} Era", "phase_summary": "A distinct period in your listening journey."}
-    if not gemini_api_key: return fallback_response
+    fallback = {"phase_name": f"Your {phase_characteristics['period']} Era", "phase_summary": "A distinct period in your listening journey."}
+    if not gemini_api_key: return fallback
     
     gemini_api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={gemini_api_key}"
     prompt = f"""
-You are a creative music journalist. Based on the following data about a person's music phase, generate two things:
-1. A cool, evocative "Daylist-style" name for the phase (3-5 words, no numbers).
-2. A short, personal, one-paragraph summary describing the vibe of this era.
+You are a creative music journalist. Based on the following data about a person's music phase, generate two things: a cool, evocative "Daylist-style" name (3-5 words, no numbers), and a short, personal, one-paragraph summary describing the vibe.
 **Phase Data:**
 - **Period:** {phase_characteristics['period']}
 - **Top Genres:** {', '.join(phase_characteristics['top_genres'])}
-- **Top Artists during this phase:** {', '.join(top_artists)}
-- **Era Vibe:** {'Modern mainstream' if phase_characteristics['avg_release_year'] > 2010 else 'Nostalgic throwback'}
-- **Popularity Vibe:** {'Mainstream hits' if phase_characteristics['avg_popularity'] > 60 else 'Underground discoveries'}
+- **Top Artists:** {', '.join(top_artists)}
+- **Era Vibe:** {'Modern' if phase_characteristics['avg_release_year'] > 2010 else 'Throwback'}
 Return the response ONLY as a valid JSON object with the keys "phase_name" and "phase_summary".
 """
     schema = {"type": "OBJECT", "properties": {"phase_name": {"type": "STRING"}, "phase_summary": {"type": "STRING"}}}
@@ -87,11 +84,10 @@ Return the response ONLY as a valid JSON object with the keys "phase_name" and "
     try:
         response = requests.post(gemini_api_url, headers={"Content-Type": "application/json"}, data=json.dumps(payload))
         response.raise_for_status()
-        result_text = response.json()['candidates'][0]['content']['parts'][0]['text']
-        return json.loads(result_text)
+        return json.loads(response.json()['candidates'][0]['content']['parts'][0]['text'])
     except Exception as e:
         logging.error(f"AI details generation failed: {e}")
-        return fallback_response
+        return fallback
 
 # ===================================================================
 # FLASK ROUTES
@@ -99,8 +95,6 @@ Return the response ONLY as a valid JSON object with the keys "phase_name" and "
 
 @app.route('/')
 def index():
-    if 'access_token' in session:
-        return redirect(url_for('timeline'))
     return render_template('login.html')
 
 @app.route('/login')
@@ -132,7 +126,6 @@ def timeline():
     display_name = session.get('display_name', 'friend')
     return render_template('timeline.html', display_name=display_name)
 
-
 # ===================================================================
 # NEW ASYNCHRONOUS ANALYSIS API
 # ===================================================================
@@ -156,17 +149,15 @@ def get_initial_phases():
             if key:
                 phases[key].append(track['id'])
         
-        # Store the track IDs for each phase in the session
         session['phase_track_ids'] = phases
         
-        def get_sort_key(phase_key):
-            season, year_str = phase_key.split(" ")
+        def get_sort_key(key):
+            season, year_str = key.split(" ")
             return int(year_str), ["Winter", "Spring", "Summer", "Autumn"].index(season)
         
-        initial_phases_output = [{'phase_period': key, 'track_count': len(phases[key])} for key in sorted(phases.keys(), key=get_sort_key, reverse=True)]
+        initial_phases = [{'phase_period': key, 'track_count': len(phases[key])} for key in sorted(phases.keys(), key=get_sort_key, reverse=True)]
             
-        return jsonify(initial_phases_output)
-
+        return jsonify(initial_phases)
     except Exception as e:
         logging.error(f"Error in get_initial_phases: {e}")
         return jsonify({"error": str(e)}), 500
@@ -181,14 +172,12 @@ def get_phase_details():
         return jsonify({"error": "Missing data or not logged in"}), 400
     
     try:
-        # Fetch full track details for just this phase
         tracks_in_phase = []
         for i in range(0, len(track_ids), 50):
             chunk = track_ids[i:i+50]
             track_data = _get_api_data('tracks', access_token, {'ids': ','.join(chunk)})
             tracks_in_phase.extend([t for t in track_data.get('tracks', []) if t])
 
-        # Perform analysis on this small batch of tracks
         artist_ids = {t['artists'][0]['id'] for t in tracks_in_phase if t.get('artists')}
         genres_map = _get_artist_genres(list(artist_ids), access_token)
         
@@ -221,6 +210,6 @@ def get_phase_details():
         logging.error(f"Error in get_phase_details for {phase_key}: {e}")
         return jsonify({"error": str(e)}), 500
 
-# --- Application Runner (for local development only) ---
+# This is only for local development
 if __name__ == '__main__':
     app.run(debug=True, port=5000)
