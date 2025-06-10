@@ -4,7 +4,6 @@ from flask import Flask, redirect, request, session, jsonify, url_for, render_te
 from dotenv import load_dotenv
 from urllib.parse import urlencode
 import logging
-from datetime import datetime
 from collections import defaultdict
 import json
 import time
@@ -12,7 +11,7 @@ import time
 # --- Setup ---
 logging.basicConfig(level=logging.INFO)
 load_dotenv()
-# Vercel requires the templates folder to be relative to the app's location in the /api directory
+# Vercel requires the templates folder to be relative to the app's location
 app = Flask(__name__, template_folder='../templates') 
 app.secret_key = os.getenv("FLASK_SECRET_KEY", os.urandom(24))
 
@@ -23,7 +22,7 @@ REDIRECT_URI = os.getenv("REDIRECT_URI")
 AUTH_URL = "https://accounts.spotify.com/authorize"
 TOKEN_URL = "https://accounts.spotify.com/api/token"
 API_BASE_URL = "https://api.spotify.com/v1/"
-SCOPE = "user-top-read user-library-read"
+SCOPE = "user-top-read" # We only need the top tracks now
 
 # ===================================================================
 # INTERNAL HELPER FUNCTIONS
@@ -34,24 +33,6 @@ def _get_api_data(endpoint, access_token, params=None):
     res = requests.get(API_BASE_URL + endpoint, headers=headers, params=params)
     res.raise_for_status()
     return res.json()
-
-def _get_paginated_tracks(url, access_token, limit=1000):
-    """
-    Fetches pages from me/tracks, with a hard limit to prevent memory issues.
-    """
-    items = []
-    endpoint = url
-    while endpoint and len(items) < limit:
-        page_limit = min(50, limit - len(items))
-        params = {'limit': page_limit}
-
-        data = _get_api_data(endpoint, access_token, params=params)
-        fetched_items = data.get('items', [])
-        items.extend(fetched_items)
-        
-        next_url = data.get('next')
-        endpoint = next_url.replace(API_BASE_URL, '') if next_url and len(items) < limit else None
-    return items
 
 def _get_artist_genres(artist_ids, access_token):
     genres_map = {}
@@ -65,43 +46,31 @@ def _get_artist_genres(artist_ids, access_token):
                 genres_map[artist['id']] = artist.get('genres', [])
     return genres_map
 
-def _get_season_key(dt):
-    month = dt.month
-    year = dt.year
-    if month in (1, 2): return f"Winter {year - 1}"
-    if month in (3, 4, 5): return f"Spring {year}"
-    if month in (6, 7, 8): return f"Summer {year}"
-    if month in (9, 10, 11): return f"Autumn {year}"
-    if month == 12: return f"Winter {year}"
-
-def _get_ai_phase_details(phase_characteristics, top_artists):
+def _get_ai_phase_name(phase_characteristics):
     gemini_api_key = os.getenv("GEMINI_API_KEY")
-    fallback_response = {"phase_name": f"Your {phase_characteristics['period']} Era", "phase_summary": "A distinct period in your listening journey."}
-    if not gemini_api_key: return fallback_response
+    fallback_name = f"Your {phase_characteristics['period']} Era"
+    if not gemini_api_key: return fallback_name
     
     gemini_api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={gemini_api_key}"
     prompt = f"""
-You are a creative music journalist. Based on the following data about a person's music phase, generate two things:
-1. A cool, evocative "Daylist-style" name for the phase (3-5 words, no numbers).
-2. A short, personal, one-paragraph summary describing the vibe of this era.
-**Phase Data:**
-- **Period:** {phase_characteristics['period']}
+You are an expert at creating cool, personal names for music phases. Your goal is to create a simple, evocative name based on the data provided. The name should be 3 to 5 words long and not include numbers.
+
+**PHASE DATA:**
+- **Time Period:** {phase_characteristics['period']}
 - **Top Genres:** {', '.join(phase_characteristics['top_genres'])}
-- **Top Artists:** {', '.join(top_artists)}
-- **Era Vibe:** {'Modern' if phase_characteristics['avg_release_year'] > 2010 else 'Throwback'}
-Return the response ONLY as a valid JSON object with the keys "phase_name" and "phase_summary".
+- **Vibe:** {'Modern' if phase_characteristics['avg_release_year'] > 2010 else 'Throwback'}
+
+Generate only the name, without any extra text or quotation marks.
 """
-    schema = {"type": "OBJECT", "properties": {"phase_name": {"type": "STRING"}, "phase_summary": {"type": "STRING"}}}
-    payload = {"contents": [{"role": "user", "parts": [{"text": prompt}]}], "generationConfig": {"responseMimeType": "application/json", "responseSchema": schema}}
     
+    payload = {"contents": [{"role": "user", "parts": [{"text": prompt}]}]}
     try:
-        response = requests.post(gemini_api_url, headers={"Content-Type": "application/json"}, data=json.dumps(payload), timeout=25)
+        response = requests.post(gemini_api_url, headers={"Content-Type": "application/json"}, data=json.dumps(payload), timeout=20)
         response.raise_for_status()
-        result_text = response.json()['candidates'][0]['content']['parts'][0]['text']
-        return json.loads(result_text)
+        return response.json()['candidates'][0]['content']['parts'][0]['text'].strip().replace('"', '')
     except Exception as e:
-        logging.error(f"AI details generation failed: {e}")
-        return fallback_response
+        logging.error(f"AI name generation failed: {e}")
+        return fallback_name
 
 # ===================================================================
 # FLASK ROUTES
@@ -109,127 +78,75 @@ Return the response ONLY as a valid JSON object with the keys "phase_name" and "
 
 @app.route('/')
 def index():
-    if 'access_token' in session:
-        return redirect(url_for('loading'))
     return render_template('login.html')
 
 @app.route('/login')
 def login():
-    params = {'response_type': 'code', 'redirect_uri': REDIRECT_URI, 'scope': SCOPE, 'client_id': CLIENT_ID, 'show_dialog': 'true'}
+    params = {'response_type': 'code', 'redirect_uri': REDIRECT_URI, 'scope': SCOPE, 'client_id': CLIENT_ID}
     return redirect(f"{AUTH_URL}?{urlencode(params)}")
 
 @app.route('/callback')
 def callback():
-    if 'error' in request.args: return jsonify({"error": request.args['error']})
+    if 'error' in request.args: return render_template('login.html', error=request.args['error'])
     if 'code' in request.args:
         payload = {'grant_type': 'authorization_code', 'code': request.args['code'], 'redirect_uri': REDIRECT_URI, 'client_id': CLIENT_ID, 'client_secret': CLIENT_SECRET}
         res = requests.post(TOKEN_URL, data=payload)
         session['access_token'] = res.json().get('access_token')
+        
         user_data = _get_api_data('me', session['access_token'])
-        session['user_id'] = user_data.get('id')
-        session['display_name'] = user_data.get('display_name', 'music lover')
-        return redirect(url_for('loading'))
-    return jsonify({"error": "Unknown callback error"})
-
-@app.route('/logout')
-def logout():
-    session.clear()
-    return redirect(url_for('index'))
-
-@app.route('/loading')
-def loading():
-    if 'access_token' not in session: return redirect('/login')
-    return render_template('loading.html')
+        session['display_name'] = user_data.get('display_name', 'friend')
+        
+        return redirect(url_for('timeline'))
+    return render_template('login.html', error="Authentication failed.")
 
 @app.route('/timeline')
 def timeline():
     access_token = session.get('access_token')
-    if not access_token: return redirect('/login')
+    if not access_token: return redirect(url_for('index'))
 
     try:
-        logging.info("Performing analysis...")
+        time_ranges = {
+            'Your Current Obsession': 'short_term',
+            'Your Recent Vibe': 'medium_term',
+            'Your All-Time DNA': 'long_term'
+        }
         
-        # --- NEW: Fetch a maximum of 1000 recent saved tracks to prevent memory overload ---
-        saved_tracks_items = _get_paginated_tracks('me/tracks', access_token, limit=1000)
-        logging.info(f"Analyzing most recent {len(saved_tracks_items)} saved tracks.")
+        final_phases = []
+        
+        for name, term in time_ranges.items():
+            logging.info(f"Analyzing {name} ({term})...")
+            top_tracks = _get_api_data('me/top/tracks', access_token, {'limit': 50, 'time_range': term})['items']
+            if not top_tracks: continue
 
-        if not saved_tracks_items:
-            return render_template('timeline.html', phases=[], display_name=session.get('display_name', 'friend'), error="No saved songs found to analyze.")
-        
-        all_tracks_info = {}
-        all_artist_ids = set()
-        for item in saved_tracks_items:
-            track = item.get('track')
-            if not track or not track.get('id') or track['id'] in all_tracks_info: continue
-            artist = track.get('artists', [{}])[0]
-            album = track.get('album', {})
-            images = album.get('images', [])
-            all_tracks_info[track['id']] = {'name': track.get('name', 'N/A'), 'artist_id': artist.get('id'), 'album_id': album.get('id'), 'artist_name': artist.get('name', 'N/A'), 'popularity': track.get('popularity', 0), 'release_year': int(album.get('release_date', '0').split('-')[0]), 'added_at': item.get('added_at'), 'cover_url': images[0]['url'] if images else 'https://placehold.co/128x128/121212/FFFFFF?text=?'}
-            if artist.get('id'): all_artist_ids.add(artist.get('id'))
-
-        artist_genres_map = _get_artist_genres(list(all_artist_ids), access_token)
-
-        phases = defaultdict(list)
-        for track_id, info in all_tracks_info.items():
-            dt = datetime.fromisoformat(info['added_at'].replace('Z', ''))
-            key = _get_season_key(dt)
-            if key: phases[key].append(info)
-        
-        final_phases_output = []
-        used_album_ids = set()
-        
-        def get_sort_key(key):
-            season, year_str = key.split(" ")
-            return int(year_str), ["Winter", "Spring", "Summer", "Autumn"].index(season)
-        
-        for key in sorted(phases.keys(), key=get_sort_key):
-            phase_tracks = phases[key]
-            if not phase_tracks: continue
+            artist_ids = {t['artists'][0]['id'] for t in top_tracks if t.get('artists')}
+            genres_map = _get_artist_genres(list(artist_ids), access_token)
 
             genres_count = defaultdict(int)
-            top_artists_list = defaultdict(int)
-            for track in phase_tracks:
-                top_artists_list[track['artist_name']] +=1
-                if track.get('artist_id') in artist_genres_map:
-                    for genre in artist_genres_map.get(track['artist_id'], []):
+            for track in top_tracks:
+                artist_id = track['artists'][0]['id'] if track.get('artists') else None
+                if artist_id in genres_map:
+                    for genre in genres_map[artist_id]:
                         genres_count[genre] += 1
-            
-            album_stats = defaultdict(lambda: {'count': 0, 'cover': ''})
-            for track in phase_tracks:
-                if track.get('album_id'):
-                    album_stats[track['album_id']]['count'] += 1
-                    album_stats[track['album_id']]['cover'] = track['cover_url']
-            
-            album_candidates = sorted([{'id': aid, **stats} for aid, stats in album_stats.items()], key=lambda x: x['count'], reverse=True)
-            cover_url = next((c['cover'] for c in album_candidates if c['id'] not in used_album_ids), 'https://placehold.co/128x128/121212/FFFFFF?text=?')
-            if cover_url != 'https://placehold.co/128x128/121212/FFFFFF?text=?': used_album_ids.add(next((c['id'] for c in album_candidates if c['cover'] == cover_url), None))
 
-            top_artists = sorted(top_artists_list.keys(), key=top_artists_list.get, reverse=True)[:5]
-            valid_years = [t['release_year'] for t in phase_tracks if t.get('release_year', 0) > 0]
+            valid_years = [int(t['album']['release_date'].split('-')[0]) for t in top_tracks if t.get('album') and t['album'].get('release_date') and '-' in t['album']['release_date']]
             avg_year = round(sum(valid_years) / len(valid_years)) if valid_years else 'N/A'
-            avg_pop = round(sum(t['popularity'] for t in phase_tracks) / len(phase_tracks)) if phase_tracks else 0
             
-            phase_chars = {"period": key, "top_genres": sorted(genres_count, key=genres_count.get, reverse=True)[:5], "avg_release_year": avg_year, "avg_popularity": avg_pop}
-            ai_details = _get_ai_phase_details(phase_chars, top_artists)
+            phase_chars = {"period": name, "top_genres": sorted(genres_count, key=genres_count.get, reverse=True)[:5], "avg_release_year": avg_year}
+            ai_name = _get_ai_phase_name(phase_chars)
 
-            final_phases_output.append({
-                'phase_period': key, 
-                'ai_phase_name': ai_details.get('phase_name', f"Your {key} Era"), 
-                'ai_phase_summary': ai_details.get('phase_summary', "..."),
-                'track_count': len(phase_tracks), 
-                'top_genres': phase_chars['top_genres'],
-                'average_popularity': avg_pop, 
-                'average_release_year': avg_year,
-                'sample_tracks': [t['name'] for t in phase_tracks[:5]], 
-                'phase_cover_url': cover_url
+            final_phases.append({
+                'phase_title': name,
+                'ai_phase_name': ai_name,
+                'sample_tracks': [t['name'] for t in top_tracks[:5]],
+                'phase_cover_url': top_tracks[0]['album']['images'][0]['url'] if top_tracks[0].get('album', {}).get('images') else 'https://placehold.co/128x128/121212/FFFFFF?text=?'
             })
-        
-        final_phases_output.reverse()
-        return render_template('timeline.html', phases=final_phases_output, display_name=session.get('display_name', 'friend'))
+            time.sleep(1) # Small delay to be nice to the APIs
+
+        return render_template('timeline.html', phases=final_phases, display_name=session.get('display_name'))
 
     except Exception as e:
         logging.error(f"An error occurred during analysis: {e}")
-        return render_template('login.html', error=f"An error occurred during analysis: {e}. Please try logging out and back in again.")
+        return render_template('login.html', error="An error occurred during analysis. Please try logging out and back in.")
 
 # This is only for local development
 if __name__ == '__main__':
