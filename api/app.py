@@ -4,7 +4,7 @@ from flask import Flask, redirect, request, session, jsonify, url_for, render_te
 from dotenv import load_dotenv
 from urllib.parse import urlencode
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from collections import defaultdict
 import json
 
@@ -82,9 +82,10 @@ Return the response ONLY as a valid JSON object with the keys "phase_name" and "
     payload = {"contents": [{"role": "user", "parts": [{"text": prompt}]}], "generationConfig": {"responseMimeType": "application/json", "responseSchema": schema}}
     
     try:
-        response = requests.post(gemini_api_url, headers={"Content-Type": "application/json"}, data=json.dumps(payload))
+        response = requests.post(gemini_api_url, headers={"Content-Type": "application/json"}, data=json.dumps(payload), timeout=20)
         response.raise_for_status()
-        return json.loads(response.json()['candidates'][0]['content']['parts'][0]['text'])
+        result_text = response.json()['candidates'][0]['content']['parts'][0]['text']
+        return json.loads(result_text)
     except Exception as e:
         logging.error(f"AI details generation failed: {e}")
         return fallback
@@ -95,6 +96,7 @@ Return the response ONLY as a valid JSON object with the keys "phase_name" and "
 
 @app.route('/')
 def index():
+    if 'access_token' in session: return redirect(url_for('timeline'))
     return render_template('login.html')
 
 @app.route('/login')
@@ -126,40 +128,51 @@ def timeline():
     display_name = session.get('display_name', 'friend')
     return render_template('timeline.html', display_name=display_name)
 
+
 # ===================================================================
 # NEW ASYNCHRONOUS ANALYSIS API
 # ===================================================================
 
-@app.route('/api/get_initial_phases')
-def get_initial_phases():
+@app.route('/api/get_analysis_data')
+def get_analysis_data():
     access_token = session.get('access_token')
     if not access_token: return jsonify({"error": "Not authenticated"}), 401
     
     try:
-        logging.info("API: Fetching initial data...")
+        logging.info("API: Fetching and processing Spotify data...")
         all_saved_tracks = _get_all_pages('me/tracks?limit=50', access_token)
         
-        phases = defaultdict(list)
+        all_tracks_info = {}
+        all_artist_ids = set()
         for item in all_saved_tracks:
             track = item.get('track')
-            if not track or not track.get('id') or not item.get('added_at'): continue
+            if not track or not track.get('id'): continue
+            artist = track.get('artists', [{}])[0]
+            all_tracks_info[track['id']] = {'artist_id': artist.get('id'), 'added_at': item.get('added_at')}
+            if artist.get('id'): all_artist_ids.add(artist.get('id'))
             
-            dt = datetime.fromisoformat(item['added_at'].replace('Z', ''))
+        artist_genres_map = _get_artist_genres(list(all_artist_ids), access_token)
+
+        phases = defaultdict(list)
+        for track_id, info in all_tracks_info.items():
+            if not info.get('added_at'): continue
+            dt = datetime.fromisoformat(info['added_at'].replace('Z', ''))
             key = _get_season_key(dt)
             if key:
-                phases[key].append(track['id'])
+                phases[key].append(track_id)
         
+        # Store for AI calls
         session['phase_track_ids'] = phases
-        
+
         def get_sort_key(key):
             season, year_str = key.split(" ")
             return int(year_str), ["Winter", "Spring", "Summer", "Autumn"].index(season)
         
-        initial_phases = [{'phase_period': key, 'track_count': len(phases[key])} for key in sorted(phases.keys(), key=get_sort_key, reverse=True)]
+        initial_phases_output = [{'phase_period': key, 'track_count': len(phases[key])} for key in sorted(phases.keys(), key=get_sort_key, reverse=True)]
             
-        return jsonify(initial_phases)
+        return jsonify(initial_phases_output)
     except Exception as e:
-        logging.error(f"Error in get_initial_phases: {e}")
+        logging.error(f"Error in initial data fetch: {e}")
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/get_phase_details', methods=['POST'])
@@ -168,8 +181,7 @@ def get_phase_details():
     phase_key = request.json['phase_key']
     track_ids = session.get('phase_track_ids', {}).get(phase_key)
 
-    if not access_token or not track_ids:
-        return jsonify({"error": "Missing data or not logged in"}), 400
+    if not access_token or not track_ids: return jsonify({"error": "Missing data"}), 400
     
     try:
         tracks_in_phase = []
@@ -185,8 +197,7 @@ def get_phase_details():
         for track in tracks_in_phase:
             artist_id = track['artists'][0]['id'] if track.get('artists') else None
             if artist_id in genres_map:
-                for genre in genres_map[artist_id]:
-                    genres_count[genre] += 1
+                for genre in genres_map[artist_id]: genres_count[genre] += 1
         
         top_genres = sorted(genres_count, key=genres_count.get, reverse=True)[:5]
         top_artists = list(dict.fromkeys([t['artists'][0]['name'] for t in tracks_in_phase if t.get('artists')]))[:5]

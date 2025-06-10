@@ -25,11 +25,7 @@
 
     <header class="text-center py-12 px-4">
         <h1 class="text-5xl font-black tracking-tight">Your Music Discovery Timeline</h1>
-        <!-- MODIFICATION: Added a container for the loading indicator -->
-        <div class="mt-4 flex justify-center items-center gap-3">
-             <div id="loading-spinner" class="animate-spin rounded-full h-5 w-5 border-b-2 border-zinc-400"></div>
-             <p id="subtitle" class="text-zinc-400 text-lg">Hello, {{ display_name }}! Analyzing your listening history now...</p>
-        </div>
+        <p id="subtitle" class="text-zinc-400 text-lg mt-4">Hello, {{ display_name }}! Analyzing your listening history now...</p>
     </header>
 
     <main class="container mx-auto px-4 py-8 max-w-3xl">
@@ -45,7 +41,6 @@
     <script>
         const container = document.getElementById('timeline-container');
         const subtitle = document.getElementById('subtitle');
-        const spinner = document.getElementById('loading-spinner'); // Get the spinner element
 
         function createSkeletonCard(phase) {
             return `
@@ -74,8 +69,6 @@
                 if (!initialResponse.ok) throw new Error('Could not fetch your Spotify data. Your session may have expired.');
                 const initialPhases = await initialResponse.json();
 
-                subtitle.innerText = `Step 2 of 2: Generating AI summaries for your ${initialPhases.length} phases...`;
-
                 if (initialPhases.length === 0) {
                     container.innerHTML = `<p class="text-center">Couldn't find any saved songs to analyze.</p>`;
                     subtitle.innerText = `Hello, {{ display_name }}! We couldn't find any saved songs to build your timeline.`;
@@ -91,7 +84,9 @@
                 });
 
                 // Now, fetch full details for each phase one by one
-                for (const phase of initialPhases) {
+                for (const [index, phase] of initialPhases.entries()) {
+                    subtitle.innerText = `Step 2 of 2: Generating AI summary for ${phase.phase_period}... (${index + 1} of ${initialPhases.length})`;
+                    
                     const res = await fetch('/api/get_phase_details', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
@@ -99,8 +94,8 @@
                     });
                     
                     if (!res.ok) {
-                        updateCardWithError(phase.phase_period, "Failed to load details.");
-                        continue;
+                        updateCardWithError(phase.phase_period, "Failed to load details from server.");
+                        continue; 
                     }
 
                     const fullPhaseData = await res.json();
@@ -117,11 +112,6 @@
             } catch (error) {
                 subtitle.innerText = 'Something went wrong.';
                 container.innerHTML = `<p class="text-red-400 text-center">An error occurred during analysis. Please try logging out and back in. Details: ${error.message}</p>`;
-            } finally {
-                // MODIFICATION: Hide the spinner when everything is done
-                if (spinner) {
-                    spinner.style.display = 'none';
-                }
             }
         }
 
@@ -129,7 +119,7 @@
             const cardId = `phase-${phasePeriod.replace(' ', '-')}`;
             const cardElement = document.getElementById(cardId);
             if (!cardElement) return;
-            cardElement.querySelector('.flex-grow').innerHTML = `<p class="text-red-300">Could not load details for ${phasePeriod}: ${errorMessage}</p>`;
+            cardElement.querySelector('.flex-grow').innerHTML = `<h3 class="font-bold text-lg">${phasePeriod}</h3><p class="text-red-300 mt-2">Could not load details for this phase: ${errorMessage}</p>`;
         }
         
         function updateCardWithData(initialPhase, fullPhaseData) {
@@ -173,7 +163,6 @@
                     </div>
                 </div>
             `;
-            // Add random color and re-observe for animation
             const newCard = cardElement.querySelector('.phase-card');
             const bgColor = getRandomColor();
             newCard.style.backgroundColor = bgColor;
@@ -185,7 +174,6 @@
             setTimeout(() => cardElement.classList.add('is-visible'), 50);
         }
 
-        // Color functions...
         function getRandomColor() { const h = Math.floor(Math.random() * 360), s = Math.floor(Math.random() * 20) + 70, l = Math.floor(Math.random() * 20) + 30; return `hsl(${h}, ${s}%, ${l}%)`; }
         function getTextColor(bgColor) { let color; if (bgColor.startsWith('hsl')) { const hsl = bgColor.substring(4, bgColor.length - 1).replace(/ /g, '').split(','); const h = parseInt(hsl[0]), s = parseInt(hsl[1].replace('%', '')) / 100, l = parseInt(hsl[2].replace('%', '')) / 100; let r, g, b; if (s === 0) { r = g = b = l; } else { const hue2rgb = (p, q, t) => { if (t < 0) t += 1; if (t > 1) t -= 1; if (t < 1/6) return p + (q - p) * 6 * t; if (t < 1/2) return q; if (t < 2/3) return p + (q - p) * (2/3 - t) * 6; return p; }; const q = l < 0.5 ? l * (1 + s) : l + s - l * s; const p = 2 * l - q; r = hue2rgb(p, q, h / 360 + 1/3); g = hue2rgb(p, q, h / 360); b = hue2rgb(p, q, h / 360 - 1/3); } color = { r: r * 255, g: g * 255, b: b * 255 }; } else { const hex = bgColor.replace('#', ''); color = { r: parseInt(hex.substring(0,2), 16), g: parseInt(hex.substring(2,4), 16), b: parseInt(hex.substring(4,6), 16) }; } return (Math.round(((color.r * 299) + (color.g * 587) + (color.b * 114)) / 1000) > 125) ? 'black' : 'white'; }
 
